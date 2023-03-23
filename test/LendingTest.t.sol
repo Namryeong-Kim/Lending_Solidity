@@ -425,6 +425,7 @@ contract Testx is Test {
             // 2000 / (4000 - 1333) * 100 = 74.xxxx
             // LT = 75%
             vm.roll(block.number + 1000);
+            console.log(block.number+1000);
             (success,) = address(lending).call(
                 abi.encodeWithSelector(DreamAcademyLending.withdraw.selector, address(0x0), 1 ether * 1333 / 4000)
             );

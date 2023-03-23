@@ -3,8 +3,10 @@ pragma solidity 0.8.13;
 
 import "openzeppelin-contracts/contracts/token/ERC20/IERC20.sol";
 import "openzeppelin-contracts/contracts/token/ERC20/ERC20.sol";
+import "openzeppelin-contracts/contracts/utils/math/SafeMath.sol";
 import "./DreamOracle.sol";
 import "forge-std/console.sol";
+import "./ABDKMath64x64.sol";
 
 interface IPriceOracle {
     function getPrice(address token) external view returns (uint256);
@@ -19,14 +21,22 @@ ETH를 담보로 사용해서 USDC를 빌리고 빌려줄 수 있는 서비스�
 - 실제 토큰을 사용하지 않고 컨트랙트 생성자의 인자로 받은 주소들을 토큰의 주소로 간주합니다.
  */
 
-contract DreamAcademyLending {
+ /**
+ 1block -> 12sec
+ 24hours -> 7200blocks -> 86400sec
+  */
+
+contract DreamAcademyLending{
     struct VaultInfo{
         uint256 collateralETH;
         uint256 collateralUSDC;
         uint256 availableBorrowETH2USDC;
         uint256 borrowUSDC;
+        uint256 borrowTime;
     }
     uint256 constant LTV = 50;
+    uint256 constant ONE_DAY_BLOCKS_TIME = 86400;
+    uint256 constant ONE_DAY_BLOCKS = 7200;
 
     address token;
     IPriceOracle oracle;
@@ -35,6 +45,7 @@ contract DreamAcademyLending {
     constructor(IPriceOracle _oracle, address _token) {
         token = _token;
         oracle = _oracle;
+        vaults[msg.sender].borrowTime;
     }
 
     function initializeLendingProtocol(address _tokenAddress) external payable{
@@ -49,7 +60,7 @@ contract DreamAcademyLending {
     */
     function deposit(address _tokenAddress, uint256 _amount) external payable{
         require(_tokenAddress == address(0x0) || _tokenAddress == token, "We do not support!");
-        VaultInfo memory tempVault;
+        VaultInfo memory tempVault = vaults[msg.sender]; 
         
         if(_tokenAddress == address(0x0)){
             require(msg.value != 0, "error");
@@ -74,15 +85,23 @@ contract DreamAcademyLending {
     */
     function borrow(address _tokenAddress, uint256 _amount) external{
         _update();
+        _getInterest();
         VaultInfo memory tempVault = vaults[msg.sender]; 
+        //console.log("amount", _amount);
+        //console.log("available eth:", tempVault.availableBorrowETH2USDC);
+        //console.log("eht:",tempVault.collateralETH);
+        
         require(tempVault.availableBorrowETH2USDC >= _amount+tempVault.borrowUSDC, "INSUFFICIENT_COLLATERAL_AMOUNT");
         IERC20(token).transfer(msg.sender, _amount);
         tempVault.borrowUSDC += _amount;
-
+        tempVault.borrowTime += block.number;
         vaults[msg.sender] = tempVault;
+        console.log("borrow:", vaults[msg.sender].borrowUSDC);
+        //_update();
         
     }
     function repay(address _tokenAddress, uint256 _amount) external{
+        _update();
         VaultInfo memory tempVault = vaults[msg.sender];
         IERC20(token).transferFrom(msg.sender, address(this), _amount);
         tempVault.borrowUSDC -= _amount;
@@ -90,10 +109,18 @@ contract DreamAcademyLending {
     }
 
     function liquidate(address _user, address _tokenAddress, uint256 _amount) external{
+        _update();
+        VaultInfo memory tempVault = vaults[msg.sender];
+        //require(tempVault.collateralETH>0,"INSUFFICIENT_COLLATERAL_AMOUNT");
+        uint price = vaults[_user].borrowUSDC * (oracle.getPrice(address(0x0))/oracle.getPrice(_tokenAddress));
+        require(price>oracle.getPrice(address(0x0))*75/100);
+        vaults[_user].borrowUSDC -= _amount;
+        vaults[_user].collateralETH -= price;
 
     }
 
     function withdraw(address _tokenAddress, uint256 _amount) external{
+        _update();
         uint256 availableWithdraw =  vaults[msg.sender].borrowUSDC *1e18 / oracle.getPrice(address(0x0)) * LTV / 100;
         VaultInfo memory tempVault = vaults[msg.sender];
 
@@ -105,14 +132,42 @@ contract DreamAcademyLending {
         require(success, "ERROR");
 
         vaults[msg.sender] = tempVault;
+     
     }
 
     function getAccruedSupplyAmount(address _tokenAddress) external returns(uint256){
         return 1;
     }
 
-    function _update() private returns(uint256) {
+    function _update() private  {
         vaults[msg.sender].availableBorrowETH2USDC = vaults[msg.sender].collateralETH * oracle.getPrice(address(0x0)) * LTV / (100*1e18) ;
+        // _compound(1000 ether , 1 * 1e15, 1) -> 0.001
     }
 
+    function _getInterest() private {
+        uint256 blocktime = (block.number - vaults[msg.sender].borrowTime)/7200;
+        
+        vaults[msg.sender].borrowUSDC = _compound(vaults[msg.sender].borrowUSDC, 1e15, blocktime);
+         
+        console.log("block:", vaults[msg.sender].borrowTime);
+        console.log("current block:", block.number);
+        console.log("balance:",vaults[msg.sender].borrowUSDC);
+    }
+
+    function _compound (uint principal, uint ratio, uint n) public pure returns (uint) {
+        return ABDKMath64x64.mulu (_pow (ABDKMath64x64.add (ABDKMath64x64.fromUInt (1), ABDKMath64x64.divu (ratio,10**18)),n),principal);
+    }
+
+    function _pow (int128 x, uint n) public pure returns (int128 r) {
+        r = ABDKMath64x64.fromUInt (1);
+        while (n > 0) {
+            if (n % 2 == 1) {
+            r = ABDKMath64x64.mul (r, x);
+            n -= 1;
+            } else {
+            x = ABDKMath64x64.mul (x, x);
+            n /= 2;
+            }
+        }
+    }
 }

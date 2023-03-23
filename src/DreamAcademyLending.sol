@@ -32,7 +32,7 @@ contract DreamAcademyLending{
         uint256 collateralUSDC;
         uint256 availableBorrowETH2USDC;
         uint256 borrowUSDC;
-        uint256 borrowTime;
+        uint256 borrowBlockNumber;
     }
     uint256 constant LTV = 50;
     uint256 constant ONE_DAY_BLOCKS_TIME = 86400;
@@ -45,7 +45,7 @@ contract DreamAcademyLending{
     constructor(IPriceOracle _oracle, address _token) {
         token = _token;
         oracle = _oracle;
-        vaults[msg.sender].borrowTime;
+        vaults[msg.sender].borrowBlockNumber;
     }
 
     function initializeLendingProtocol(address _tokenAddress) external payable{
@@ -85,18 +85,13 @@ contract DreamAcademyLending{
     */
     function borrow(address _tokenAddress, uint256 _amount) external{
         _update();
-        _getInterest();
         VaultInfo memory tempVault = vaults[msg.sender]; 
-        //console.log("amount", _amount);
-        //console.log("available eth:", tempVault.availableBorrowETH2USDC);
-        //console.log("eht:",tempVault.collateralETH);
-        
+
         require(tempVault.availableBorrowETH2USDC >= _amount+tempVault.borrowUSDC, "INSUFFICIENT_COLLATERAL_AMOUNT");
         IERC20(token).transfer(msg.sender, _amount);
         tempVault.borrowUSDC += _amount;
-        tempVault.borrowTime += block.number;
+        tempVault.borrowBlockNumber = block.number;
         vaults[msg.sender] = tempVault;
-        console.log("borrow:", vaults[msg.sender].borrowUSDC);
         //_update();
         
     }
@@ -141,21 +136,20 @@ contract DreamAcademyLending{
 
     function _update() private  {
         vaults[msg.sender].availableBorrowETH2USDC = vaults[msg.sender].collateralETH * oracle.getPrice(address(0x0)) * LTV / (100*1e18) ;
-        // _compound(1000 ether , 1 * 1e15, 1) -> 0.001
+        _updateInterest();
     }
 
-    function _getInterest() private {
-        uint256 blocktime = (block.number - vaults[msg.sender].borrowTime)/7200;
-        
-        vaults[msg.sender].borrowUSDC = _compound(vaults[msg.sender].borrowUSDC, 1e15, blocktime);
-         
-        console.log("block:", vaults[msg.sender].borrowTime);
-        console.log("current block:", block.number);
-        console.log("balance:",vaults[msg.sender].borrowUSDC);
+    function _updateInterest() private {
+        VaultInfo memory temp = vaults[msg.sender];
+        uint256 blocktime = (block.number - temp.borrowBlockNumber);
+        temp.borrowUSDC = _compound(vaults[msg.sender].borrowUSDC, 13881950033933776, blocktime);
+        temp.borrowBlockNumber = block.number;
+        vaults[msg.sender] = temp;
+        console.log(temp.borrowUSDC);
     }
 
     function _compound (uint principal, uint ratio, uint n) public pure returns (uint) {
-        return ABDKMath64x64.mulu (_pow (ABDKMath64x64.add (ABDKMath64x64.fromUInt (1), ABDKMath64x64.divu (ratio,10**18)),n),principal);
+        return ABDKMath64x64.mulu (_pow (ABDKMath64x64.add (ABDKMath64x64.fromUInt (1), ABDKMath64x64.divu (ratio,10**22)),n),principal);
     }
 
     function _pow (int128 x, uint n) public pure returns (int128 r) {

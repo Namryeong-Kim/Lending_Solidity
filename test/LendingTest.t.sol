@@ -669,8 +669,8 @@ contract Testx is Test {
     }
 
     function testLiquidationHealthyLoanAfterPriorLiquidationFails() external {
-        supplyUSDCDepositUser1();
-        supplySmallEtherDepositUser2();
+        supplyUSDCDepositUser1();//10000
+        supplySmallEtherDepositUser2(); //1
 
         dreamOracle.setPrice(address(0x0), 4000 ether);
 

@@ -108,13 +108,8 @@ contract DreamAcademyLending{
         VaultInfo memory tempVault = vaults[_user];
         require(vaults[_user].borrowUSDC >= _amount, "no");
         console.log("borrow", vaults[_user].borrowUSDC);
-        //require(tempVault.collateralETH>0,"INSUFFICIENT_COLLATERAL_AMOUNT");
-        //uint price = vaults[_user].borrowUSDC * oracle.getPrice(address(0x0))/10**18;
+        
         uint price = vaults[_user].collateralETH * oracle.getPrice(address(0x0))/oracle.getPrice(_tokenAddress)*3/4;
-        // console.log("eth", oracle.getPrice(address(0x0)));
-        // console.log("usdc", oracle.getPrice(_tokenAddress));
-        // console.log("price",price);
-        // console.log("lt",price*3/4);
         require(vaults[_user].borrowUSDC > price);
         require(_amount == vaults[_user].borrowUSDC/4);
         

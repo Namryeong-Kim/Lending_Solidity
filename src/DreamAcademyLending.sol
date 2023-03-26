@@ -62,13 +62,14 @@ contract DreamAcademyLending{
         require(_tokenAddress == address(0x0) || _tokenAddress == token, "We do not support!");
         VaultInfo memory tempVault = vaults[msg.sender]; 
         
-        if(_tokenAddress == address(0x0)){
+        if(_tokenAddress == address(0x0)){ //담보로 맡길 ETH
             require(msg.value != 0, "error");
             require(msg.value == _amount, "false");
             tempVault.collateralETH += msg.value;
    
         }
-        else{
+        else{ //borrower에게 빌려줄 USDC 예금
+        //msg.sender의 balanceOf >= _amount
             require(_amount!= 0, "INSUFFICIENT_AMOUNT");
             IERC20(_tokenAddress).transferFrom(msg.sender, address(this), _amount);
             tempVault.collateralUSDC += _amount;
@@ -80,13 +81,12 @@ contract DreamAcademyLending{
     /** borrow
     1$ pegging -> 1USDC = 1$
     1. msg.sender가 빌릴 수 있는양 계산(잔고x담보ETHxLTV) -> 빌릴 수 있는 양은 빌리려고 하는 양보다 많아야 함
-    
-    
+    담보 있을 때 예금도 빌리려는 만큼 있어야 하고, 빌리려는 만큼 담보도 있어야함
     */
     function borrow(address _tokenAddress, uint256 _amount) external{
         _update();
         VaultInfo memory tempVault = vaults[msg.sender]; 
-
+        
         require(tempVault.availableBorrowETH2USDC >= _amount+tempVault.borrowUSDC, "INSUFFICIENT_COLLATERAL_AMOUNT");
         IERC20(token).transfer(msg.sender, _amount);
         tempVault.borrowUSDC += _amount;
@@ -121,11 +121,20 @@ contract DreamAcademyLending{
     function withdraw(address _tokenAddress, uint256 _amount) external{
         _update();
         uint256 availableWithdraw =  vaults[msg.sender].borrowUSDC *1e18 / oracle.getPrice(address(0x0)) * LTV / 100;
+        //uint256 availableWithdraw = oracle.getPrice(address(0x0)) - (vaults[msg.sender].borrowUSDC*1e18*100*100/75);
+        console.log("price", oracle.getPrice(address(0x0)));
+        console.log("borrow", vaults[msg.sender].borrowUSDC);
+        console.log("withdraw", availableWithdraw);
         VaultInfo memory tempVault = vaults[msg.sender];
-
-        require(tempVault.collateralETH >= _amount, "INSUFFICIENT_AMOUNT");
-        require(tempVault.collateralETH - availableWithdraw >= _amount);
-
+        if(tempVault.borrowUSDC != 0){
+            require(tempVault.collateralETH >= _amount && availableWithdraw >= _amount, "INSUFFICIENT_AMOUNT");
+            require(tempVault.collateralETH - availableWithdraw >= _amount);
+        }
+        else{
+            require(tempVault.collateralETH >= _amount, "INSUFFICIENT_AMOUNT");
+        }
+        
+    
         tempVault.collateralETH -= _amount;
         (bool success, ) = payable(msg.sender).call{value: _amount}("");
         require(success, "ERROR");

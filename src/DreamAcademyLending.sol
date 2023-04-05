@@ -8,6 +8,7 @@ import "./DreamOracle.sol";
 import "forge-std/console.sol";
 import "./ABDKMath64x64.sol";
 
+
 interface IPriceOracle {
     function getPrice(address token) external view returns (uint256);
     function setPrice(address token, uint256 price) external;
@@ -29,14 +30,19 @@ ETH를 담보로 사용해서 USDC를 빌리고 빌려줄 수 있는 서비스�
 contract DreamAcademyLending{
     struct VaultInfo{
         uint256 collateralETH;
-        uint256 collateralUSDC;
+        uint256 depositUSDC;
         uint256 availableBorrowETH2USDC;
         uint256 borrowUSDC;
         uint256 borrowBlockNumber;
     }
     uint256 constant LTV = 50;
+    uint256 constant LT = 75;
     uint256 constant ONE_DAY_BLOCKS_TIME = 86400;
     uint256 constant ONE_DAY_BLOCKS = 7200;
+
+    uint256 totalBorrowUSDC;
+    uint256 totalDepositUSDC;
+    
 
     address token;
     IPriceOracle oracle;
@@ -50,6 +56,7 @@ contract DreamAcademyLending{
 
     function initializeLendingProtocol(address _tokenAddress) external payable{
         IERC20(_tokenAddress).transferFrom(msg.sender, address(this), msg.value);
+        totalDepositUSDC += msg.value;
     }
 
     /** deposi(입금)
@@ -71,8 +78,10 @@ contract DreamAcademyLending{
         else{ //borrower에게 빌려줄 USDC 예금
         //msg.sender의 balanceOf >= _amount
             require(_amount!= 0, "INSUFFICIENT_AMOUNT");
+            require(IERC20(_tokenAddress).balanceOf(msg.sender) >= _amount, "INSUFFICIENT_DEPOSIT_AMOUNT");
             IERC20(_tokenAddress).transferFrom(msg.sender, address(this), _amount);
-            tempVault.collateralUSDC += _amount;
+            tempVault.depositUSDC += _amount;
+            totalDepositUSDC += _amount;
         }
         vaults[msg.sender] = tempVault;
     }
@@ -88,58 +97,76 @@ contract DreamAcademyLending{
         VaultInfo memory tempVault = vaults[msg.sender]; 
         
         require(tempVault.availableBorrowETH2USDC >= _amount+tempVault.borrowUSDC, "INSUFFICIENT_COLLATERAL_AMOUNT");
-        IERC20(token).transfer(msg.sender, _amount);
+        //require(healthFactorCheck > 1, "NOT_HEALTY");
+
         tempVault.borrowUSDC += _amount;
+        totalBorrowUSDC += _amount;
         tempVault.borrowBlockNumber = block.number;
+        IERC20(token).transfer(msg.sender, _amount);
+        
         vaults[msg.sender] = tempVault;
-        //_update();
+        _update();
         
     }
+
     function repay(address _tokenAddress, uint256 _amount) external{
         _update();
         VaultInfo memory tempVault = vaults[msg.sender];
+        require(tempVault.borrowUSDC >= _amount, "INSUFFICIENT_REPAY_AMOUNT");
+        //require(healthFactorCheck > 1, "NOT_HEALTY");
+
         IERC20(token).transferFrom(msg.sender, address(this), _amount);
         tempVault.borrowUSDC -= _amount;
+        totalBorrowUSDC -= _amount;
         vaults[msg.sender] = tempVault;
     }
 
     function liquidate(address _user, address _tokenAddress, uint256 _amount) external{
         _update();
-        VaultInfo memory tempVault = vaults[_user];
-        require(vaults[_user].borrowUSDC >= _amount, "no");
-        console.log("borrow", vaults[_user].borrowUSDC);
+        VaultInfo memory tempVault = vaults[msg.sender];
+        //require(healthFactorCheck < 1, "HEALTY, you don't need liquidation");
+        require(tempVault.borrowUSDC >= _amount, "no");
+        console.log("borrow", tempVault.borrowUSDC);
+        require(tempVault.borrowUSDC*50/100 < _amount, "INSUFFICIENT_AMOUNT");
+        uint price = tempVault.collateralETH * oracle.getPrice(address(0x0))/oracle.getPrice(_tokenAddress)*3/4;
+        require(tempVault.borrowUSDC > price);
+        require(_amount == tempVault.borrowUSDC/4);
         
-        uint price = vaults[_user].collateralETH * oracle.getPrice(address(0x0))/oracle.getPrice(_tokenAddress)*3/4;
-        require(vaults[_user].borrowUSDC > price);
-        require(_amount == vaults[_user].borrowUSDC/4);
-        
-        vaults[_user].borrowUSDC -= _amount;
-        vaults[_user].collateralETH -= _amount * oracle.getPrice(_tokenAddress)/oracle.getPrice(address(0x0));
+        tempVault.borrowUSDC -= _amount;
+        totalBorrowUSDC -= _amount;
+        tempVault.collateralETH -= _amount * oracle.getPrice(_tokenAddress)/oracle.getPrice(address(0x0));
+        vaults[msg.sender] = tempVault;
 
     }
 
     function withdraw(address _tokenAddress, uint256 _amount) external{
         _update();
-        uint256 availableWithdraw =  vaults[msg.sender].borrowUSDC *1e18 / oracle.getPrice(address(0x0)) * LTV / 100;
-        //uint256 availableWithdraw = oracle.getPrice(address(0x0)) - (vaults[msg.sender].borrowUSDC*1e18*100*100/75);
-        console.log("price", oracle.getPrice(address(0x0)));
-        console.log("borrow", vaults[msg.sender].borrowUSDC);
-        console.log("withdraw", availableWithdraw);
         VaultInfo memory tempVault = vaults[msg.sender];
-        if(tempVault.borrowUSDC != 0){
-            require(tempVault.collateralETH >= _amount && availableWithdraw >= _amount, "INSUFFICIENT_AMOUNT");
-            require(tempVault.collateralETH - availableWithdraw >= _amount);
+        uint256 availableWithdraw =  tempVault.borrowUSDC * oracle.getPrice(address(token)) / (oracle.getPrice(address(0x0)));
+        // console.log("borrow", tempVault.borrowUSDC); //2000
+        // console.log("usdc", oracle.getPrice(address(token))); //1
+        // console.log("eth", oracle.getPrice(address(0x0))); //4000
+        
+        if(_tokenAddress == address(0)){
+            require(tempVault.collateralETH >= _amount, "INSUFFICIENT_AMOUNT");
+            require(address(this).balance >= _amount, "INSUFFICIENT_AMOUNT");
+            // console.log("collateral", tempVault.collateralETH);
+            // console.log("amount", _amount);
+            // console.log("availableWithdraw", availableWithdraw);
+            require((tempVault.collateralETH - _amount) * LTV / 100  >= availableWithdraw, "CANNOT_WITHDRAW");
+            tempVault.collateralETH -= _amount;
+            (bool success, ) = payable(msg.sender).call{value: _amount}("");
+            require(success, "ERROR");  
+
         }
         else{
-            require(tempVault.collateralETH >= _amount, "INSUFFICIENT_AMOUNT");
+            require(tempVault.depositUSDC >= _amount,"INSUFFICIENT_AMOUNT");
+            tempVault.depositUSDC -= _amount;
+            totalDepositUSDC -= _amount;
+            IERC20(token).transfer(msg.sender, _amount);
         }
-        
-    
-        tempVault.collateralETH -= _amount;
-        (bool success, ) = payable(msg.sender).call{value: _amount}("");
-        require(success, "ERROR");
 
-        vaults[msg.sender] = tempVault;
+        vaults[msg.sender] = tempVault;        
      
     }
 
@@ -152,14 +179,22 @@ contract DreamAcademyLending{
         _updateInterest();
     }
 
+
     function _updateInterest() private {
-        VaultInfo memory temp = vaults[msg.sender];
-        uint256 blocktime = (block.number - temp.borrowBlockNumber);
-        temp.borrowUSDC = _compound(vaults[msg.sender].borrowUSDC, 13881950033933776, blocktime);
-        temp.borrowBlockNumber = block.number;
-        vaults[msg.sender] = temp;
-        
+        VaultInfo memory tempVault = vaults[msg.sender];
+        uint256 blocktime = (block.number - tempVault.borrowBlockNumber);
+        console.log("blocktime",blocktime);
+        tempVault.borrowUSDC = _compound(vaults[msg.sender].borrowUSDC, 13881950033933776, blocktime);
+        console.log("tempVault.borrowUSDC",tempVault.borrowUSDC);
+        tempVault.borrowBlockNumber = block.number;
+        vaults[msg.sender] = tempVault;
     }
+
+    // function healthFactorCheck() external returns(uint256 healthFactor){
+    //     VaultInfo memory temp = vaults[msg.sender];
+    //     healthFactor = temp.collateralETH * LT / 100 * temp.borrowUSDC;
+
+    // }
 
     function _compound (uint principal, uint ratio, uint n) public pure returns (uint) {
         return ABDKMath64x64.mulu (_pow (ABDKMath64x64.add (ABDKMath64x64.fromUInt (1), ABDKMath64x64.divu (ratio,10**22)),n),principal);

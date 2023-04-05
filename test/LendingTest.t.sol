@@ -598,10 +598,10 @@ contract Testx is Test {
     }
 
     function testLiquidationUnhealthyLoanSucceeds() external {
-        supplyUSDCDepositUser1();
-        supplySmallEtherDepositUser2();
+        supplyUSDCDepositUser1(); //100000000
+        supplySmallEtherDepositUser2(); //1
 
-        dreamOracle.setPrice(address(0x0), 4000 ether);
+        dreamOracle.setPrice(address(0x0), 4000 ether); //2000 borrow ok
 
         vm.startPrank(user2);
         {
@@ -609,7 +609,7 @@ contract Testx is Test {
             (bool success,) = address(lending).call(
                 abi.encodeWithSelector(DreamAcademyLending.borrow.selector, address(usdc), 2000 ether)
             );
-            assertTrue(success);
+            assertTrue(success); //ok
 
             assertTrue(usdc.balanceOf(user2) == 2000 ether);
 
@@ -624,7 +624,7 @@ contract Testx is Test {
         {
             usdc.approve(address(lending), type(uint256).max);
             (bool success,) = address(lending).call(
-                abi.encodeWithSelector(DreamAcademyLending.liquidate.selector, user2, address(usdc), 500 ether)
+                abi.encodeWithSelector(DreamAcademyLending.liquidate.selector, user2, address(usdc), 500 ether) 
             );
             assertTrue(success);
         }

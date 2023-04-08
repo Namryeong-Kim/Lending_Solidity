@@ -121,7 +121,7 @@ contract DreamAcademyLending{
     function liquidate(address _user, address _tokenAddress, uint256 _amount) external{
         _borrowInterest(_tokenAddress);
 
-        BorrowerVault memory borrower = borrowerVaults[msg.sender]; 
+        BorrowerVault memory borrower = borrowerVaults[_user]; 
 
         require(borrower.borrowUSDC >= _amount, "INSUFFICIENT_LIQUIDATE_AMOUNT");
        
@@ -133,7 +133,7 @@ contract DreamAcademyLending{
         totalBorrowUSDC -= _amount;
 
         borrower.collateralETH -= _amount * oracle.getPrice(_tokenAddress)/oracle.getPrice(address(0x0));
-        borrowerVaults[msg.sender] = borrower;
+        borrowerVaults[_user] = borrower;
 
     }
 

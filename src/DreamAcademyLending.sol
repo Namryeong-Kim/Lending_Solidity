@@ -3,7 +3,6 @@ pragma solidity ^0.8.13;
 
 import "openzeppelin-contracts/contracts/token/ERC20/IERC20.sol";
 import "openzeppelin-contracts/contracts/token/ERC20/ERC20.sol";
-import "openzeppelin-contracts/contracts/utils/math/SafeMath.sol";
 import "./DreamOracle.sol";
 import "forge-std/console.sol";
 import "./ABDKMath64x64.sol";
@@ -25,8 +24,8 @@ ETH를 담보로 사용해서 USDC를 빌리고 빌려줄 수 있는 서비스�
 contract DreamAcademyLending{
     struct LenderVault{
         uint256 depositUSDC;
-        uint256 depositBlockNumber;
         uint256 rewards;
+        uint256 depositBlockNumber;
     }
     struct BorrowerVault{
         uint256 collateralETH;
@@ -40,11 +39,10 @@ contract DreamAcademyLending{
     uint256 constant ONE_DAY_BLOCKS = 7200;
     uint256 constant ONE_BLOCK_SEC = 12;
     //uint256 constant INTEREST_RATE = 1000000011568290959081926677;
-    uint256 constant INTEREST_RATE =138819500341472218972641565;
+    uint256 constant INTEREST_RATE =138820 * 1e6;
 
     uint256 totalBorrowUSDC;
     uint256 totalDepositUSDC;
-    uint256 totalUSDCUpdate;
 
 
     address token;
@@ -67,7 +65,8 @@ contract DreamAcademyLending{
         require(_tokenAddress == address(0x0) || _tokenAddress == token, "We do not support!");
         LenderVault memory lender = lenderVaults[msg.sender]; 
         BorrowerVault memory borrower = borrowerVaults[msg.sender]; 
-        
+
+
         if(_tokenAddress == address(0x0)){ 
             require(msg.value != 0, "error");
             require(msg.value == _amount, "false");
@@ -77,22 +76,18 @@ contract DreamAcademyLending{
         else{ 
             require(_amount > 0, "INSUFFICIENT_AMOUNT");
             require(IERC20(_tokenAddress).balanceOf(msg.sender) >= _amount, "INSUFFICIENT_DEPOSIT_AMOUNT");
-            _depositInterest();
             IERC20(_tokenAddress).transferFrom(msg.sender, address(this), _amount);
             lender.depositUSDC += _amount;
-            totalDepositUSDC += _amount;
-            console.log("1. lender.depositUSDC", lender.depositUSDC);
-
             lender.depositBlockNumber = block.number;
-            totalDepositUSDC = block.number;
+            totalDepositUSDC += _amount;
+            
         }
         lenderVaults[msg.sender] = lender;
         borrowerVaults[msg.sender] = borrower;
     }
 
     function borrow(address _tokenAddress, uint256 _amount) external{
-        _borrowInterest(_tokenAddress);
-
+        _update();
         BorrowerVault memory borrower = borrowerVaults[msg.sender]; 
         borrower.availableBorrowETH2USDC = borrower.collateralETH * oracle.getPrice(address(0x0)) * LTV / (100*oracle.getPrice(address(_tokenAddress))) - borrower.borrowUSDC ;
         require(borrower.availableBorrowETH2USDC >= _amount, "INSUFFICIENT_COLLATERAL_AMOUNT");
@@ -102,10 +97,11 @@ contract DreamAcademyLending{
         IERC20(token).transfer(msg.sender, _amount);
         
         borrowerVaults[msg.sender] = borrower;
+
     }
 
     function repay(address _tokenAddress, uint256 _amount) external{
-        _borrowInterest(_tokenAddress);
+        _update();
 
         BorrowerVault memory borrower = borrowerVaults[msg.sender]; 
         require(borrower.borrowUSDC >= _amount, "INSUFFICIENT_REPAY_AMOUNT");
@@ -119,7 +115,7 @@ contract DreamAcademyLending{
     }
 
     function liquidate(address _user, address _tokenAddress, uint256 _amount) external{
-        _borrowInterest(_tokenAddress);
+        _update();
 
         BorrowerVault memory borrower = borrowerVaults[_user]; 
 
@@ -138,14 +134,10 @@ contract DreamAcademyLending{
     }
 
     function withdraw(address _tokenAddress, uint256 _amount) external {
-        _borrowInterest(_tokenAddress);
-        _depositInterest();
-        totalDepositUSDC = block.number;
-        LenderVault memory lender = lenderVaults[msg.sender]; 
-        BorrowerVault memory borrower = borrowerVaults[msg.sender]; 
-        
-        
+        _update();
+
         if(_tokenAddress == address(0)){
+                    BorrowerVault memory borrower = borrowerVaults[msg.sender]; 
             require(borrower.collateralETH >= _amount, "INSUFFICIENT_AMOUNT");
             require(address(this).balance >= _amount, "INSUFFICIENT_AMOUNT");
 
@@ -154,73 +146,74 @@ contract DreamAcademyLending{
             borrower.collateralETH -= _amount;
             (bool success, ) = payable(msg.sender).call{value: _amount}("");
             require(success, "ERROR");  
+            borrowerVaults[msg.sender] = borrower;  
+
         }
         else{
             require(IERC20(token).balanceOf(address(this)) >= _amount,"INSUFFICIENT_AMOUNT");
 
             uint256 availableWithdrawUSDC = getAccruedSupplyAmount(address(token));
-            
-            console.log("availableWithdrawUSDC", availableWithdrawUSDC);
+            LenderVault memory lender = lenderVaults[msg.sender]; 
+
             require(availableWithdrawUSDC >= _amount, "CANNOT_WITHDRAW");
 
-            lender.depositUSDC -= _amount;
+            uint256 depositorTotalUSDCAmount = lender.depositUSDC + lender.rewards;
+            if(_amount <= lender.rewards) {
+                lender.rewards -= _amount;
+            }else {
+                depositorTotalUSDCAmount -= _amount;
+                lender.depositUSDC -= depositorTotalUSDCAmount;
+            }
             totalDepositUSDC -= _amount;
             IERC20(token).transfer(msg.sender, _amount);
+            lenderVaults[msg.sender] = lender;
+
         }
 
-        lenderVaults[msg.sender] = lender;
-        borrowerVaults[msg.sender] = borrower;  
      
     }
     //getAccruedSupplyAmount 함수는 프로토콜에 예치한 사람이 공급한 유동성을 확인할 수 있는 함수입니다. ( 원금 + 대출이자로 얻은 수익 )
     function getAccruedSupplyAmount(address _tokenAddress) public returns(uint256){
-        _depositInterest();
-        console.log("lender.depositUSDC", lenderVaults[msg.sender].depositUSDC);
-        console.log("lender.rewards", lenderVaults[msg.sender].rewards);
+        _update();
+        // console.log(msg.sender);
+        LenderVault memory lender = lenderVaults[msg.sender];
+
+        uint256 totalBorrowUSDCAccrued = _compound(totalBorrowUSDC, INTEREST_RATE, block.number - lender.depositBlockNumber);
+        uint256 interest = totalBorrowUSDCAccrued - totalBorrowUSDC;
+        lender.rewards += interest * lender.depositUSDC / totalDepositUSDC;
+        totalBorrowUSDC = totalBorrowUSDCAccrued;
+        lender.depositBlockNumber = block.number;
+        lenderVaults[msg.sender] = lender;  
+
+
+  
         return lenderVaults[msg.sender].depositUSDC + lenderVaults[msg.sender].rewards;
     }
 
-    function _depositInterest() private {
-        LenderVault memory lender = lenderVaults[msg.sender]; 
 
-        //uint256 totalDepositUSDCAccrued = IERC20(token).balanceOf(address(this));
-        uint256 depositBlocktime = block.number - totalUSDCUpdate;
-        if(totalBorrowUSDC==0) return;
-        uint256 totalBorrowUSDCAccrued = _compound(totalBorrowUSDC, INTEREST_RATE, depositBlocktime);
-        console.log("totalBorrowUSDC", totalBorrowUSDC);
-        console.log("totalBorrowUSDCAccrued", totalBorrowUSDCAccrued);
-        //if(totalDepositUSDCAccrued==0) return;
-        uint256 interest = totalBorrowUSDCAccrued - totalBorrowUSDC;
-        console.log("lender.depositUSDC", lender.depositUSDC);
-        console.log("lender.rewards", lender.rewards);
-        lender.rewards = interest * lender.depositUSDC / totalDepositUSDC;
-        
-        totalUSDCUpdate = block.number;
-        totalBorrowUSDC = totalBorrowUSDCAccrued;
-        lenderVaults[msg.sender] = lender;
+
+
+    function _update() private {
+        BorrowerVault memory borrower = borrowerVaults[msg.sender]; 
+        uint256 diffBlockNum = block.number - borrower.borrowBlockNumber;
+        borrower.borrowUSDC = _compound(borrower.borrowUSDC, INTEREST_RATE, diffBlockNum); //1.38819500341472218972641565 10^-7
+        borrower.borrowBlockNumber = block.number;
+
+        borrowerVaults[msg.sender] = borrower; 
+
     }
 
-
-    function _borrowInterest(address _tokenAddress) private {
-        BorrowerVault memory borrower = borrowerVaults[msg.sender]; 
-
-        uint256 borrowBlocktime = block.number - borrower.borrowBlockNumber;
-        console.log("borrower.borrowUSDC", borrower.borrowUSDC);
-        borrower.borrowUSDC = _compound(borrower.borrowUSDC, INTEREST_RATE, borrowBlocktime); //1.38819500341472218972641565 10^-7
-        borrower.borrowBlockNumber = block.number;
-        console.log("borrower.borrowUSDC+interest", borrower.borrowUSDC);
-        
-        borrowerVaults[msg.sender] = borrower; 
-    }    
-
-    
-
-    function _compound (uint principal, uint ratio, uint n) public pure returns (uint) {
-        return ABDKMath64x64.mulu (
-            _pow (
-                ABDKMath64x64.add (
-                    ABDKMath64x64.fromUInt (1), ABDKMath64x64.divu (ratio,10**30)),n)
-            ,principal);
+    function _compound (uint principal, uint ratio, uint n)
+    public pure returns (uint) {
+    return ABDKMath64x64.mulu (
+        _pow (
+        ABDKMath64x64.add (
+            ABDKMath64x64.fromUInt (1), 
+            ABDKMath64x64.divu (
+            ratio,
+            10**18)),
+        n),
+        principal);
     }
 
     function _pow (int128 x, uint n) public pure returns (int128 r) {

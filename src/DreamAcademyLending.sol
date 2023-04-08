@@ -26,6 +26,8 @@ contract DreamAcademyLending{
         uint256 depositUSDC;
         uint256 rewards;
         uint256 depositBlockNumber;
+        uint256 totalDepositUSDC;
+        uint256 totalRewards;
     }
     struct BorrowerVault{
         uint256 collateralETH;
@@ -35,14 +37,12 @@ contract DreamAcademyLending{
     }
     uint256 constant LTV = 50;
     uint256 constant LT = 75;
-    uint256 constant ONE_DAY_BLOCKS_TIME = 86400;
-    uint256 constant ONE_DAY_BLOCKS = 7200;
     uint256 constant ONE_BLOCK_SEC = 12;
     //uint256 constant INTEREST_RATE = 1000000011568290959081926677;
     uint256 constant INTEREST_RATE =138820 * 1e6;
 
     uint256 totalBorrowUSDC;
-    uint256 totalDepositUSDC;
+    uint256 totalSupplyUSDC;
 
 
     address token;
@@ -61,7 +61,7 @@ contract DreamAcademyLending{
     }
 
     function deposit(address _tokenAddress, uint256 _amount) external payable{
-        
+        _update();
         require(_tokenAddress == address(0x0) || _tokenAddress == token, "We do not support!");
         LenderVault memory lender = lenderVaults[msg.sender]; 
         BorrowerVault memory borrower = borrowerVaults[msg.sender]; 
@@ -78,9 +78,9 @@ contract DreamAcademyLending{
             require(IERC20(_tokenAddress).balanceOf(msg.sender) >= _amount, "INSUFFICIENT_DEPOSIT_AMOUNT");
             IERC20(_tokenAddress).transferFrom(msg.sender, address(this), _amount);
             lender.depositUSDC += _amount;
-            lender.depositBlockNumber = block.number;
-            totalDepositUSDC += _amount;
-            
+            //lender.depositBlockNumber = block.number;
+            totalSupplyUSDC += _amount;
+            lender.totalDepositUSDC = totalSupplyUSDC;
         }
         lenderVaults[msg.sender] = lender;
         borrowerVaults[msg.sender] = borrower;
@@ -137,7 +137,7 @@ contract DreamAcademyLending{
         _update();
 
         if(_tokenAddress == address(0)){
-                    BorrowerVault memory borrower = borrowerVaults[msg.sender]; 
+            BorrowerVault memory borrower = borrowerVaults[msg.sender]; 
             require(borrower.collateralETH >= _amount, "INSUFFICIENT_AMOUNT");
             require(address(this).balance >= _amount, "INSUFFICIENT_AMOUNT");
 
@@ -164,41 +164,51 @@ contract DreamAcademyLending{
                 depositorTotalUSDCAmount -= _amount;
                 lender.depositUSDC -= depositorTotalUSDCAmount;
             }
-            totalDepositUSDC -= _amount;
+            totalSupplyUSDC -= _amount;
+            
             IERC20(token).transfer(msg.sender, _amount);
             lenderVaults[msg.sender] = lender;
 
         }
-
-     
     }
+
     //getAccruedSupplyAmount 함수는 프로토콜에 예치한 사람이 공급한 유동성을 확인할 수 있는 함수입니다. ( 원금 + 대출이자로 얻은 수익 )
     function getAccruedSupplyAmount(address _tokenAddress) public returns(uint256){
         _update();
-        // console.log(msg.sender);
         LenderVault memory lender = lenderVaults[msg.sender];
-
         uint256 totalBorrowUSDCAccrued = _compound(totalBorrowUSDC, INTEREST_RATE, block.number - lender.depositBlockNumber);
         uint256 interest = totalBorrowUSDCAccrued - totalBorrowUSDC;
-        lender.rewards += interest * lender.depositUSDC / totalDepositUSDC;
+    
+        lender.rewards += interest * lender.depositUSDC / totalSupplyUSDC;
+        
+        /**
+        [문제]
+        updateUSDC를 호출할 때만 이자가 계산됨 -> 중간에 다른 사람이 예치하면 새로운 지분으로 이자를 나눠야 함 (for문 말고 다른 방법!?)
+        참고 자료: https://solidity-by-example.org/defi/staking-rewards/ (이해 안됨)
+
+        1. lender.depositUSDC / totalSupplyUSDC 계산
+        2. interest = totalBorrowUSDCAccrued - totalBorrowUSDC로 이자 계산
+        3. lender.rewards += interest * lender.depositUSDC / totalSupplyUSDC로 지분에 따른 이자 더해주기
+        -> 해당 시점에서 msg.sender외에는 어떻게 분배할 것인가?
+        - lender.totalRewards를 만들어서 이자를 누적시키고, lender.totalRewards - interest로 계산?
+        - block.number - lender.depositBlockNumber로 해당 기간 만큼의 이자를 계산해야 하는데 계산한 기간 동안 다른 사람이 예치하면 이자를 어떻게 계산해야 하는가?
+        - totalSupplyUSDC외에 lender.totalDepositUSDC를 만들어서 해당 시점에서의 지분 계산?
+        - 기간 동안의 이자 lender.rewards에 누적? -> 근데 updateUSDC 호출할때만 계산되는데 어떻게 하지.. 쫌 이상함
+         */
+        
         totalBorrowUSDC = totalBorrowUSDCAccrued;
         lender.depositBlockNumber = block.number;
         lenderVaults[msg.sender] = lender;  
-
-
-  
         return lenderVaults[msg.sender].depositUSDC + lenderVaults[msg.sender].rewards;
     }
 
-
-
-
     function _update() private {
         BorrowerVault memory borrower = borrowerVaults[msg.sender]; 
+        
         uint256 diffBlockNum = block.number - borrower.borrowBlockNumber;
-        borrower.borrowUSDC = _compound(borrower.borrowUSDC, INTEREST_RATE, diffBlockNum); //1.38819500341472218972641565 10^-7
+        borrower.borrowUSDC = _compound(borrower.borrowUSDC, INTEREST_RATE, diffBlockNum);
         borrower.borrowBlockNumber = block.number;
-
+        
         borrowerVaults[msg.sender] = borrower; 
 
     }
